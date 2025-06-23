@@ -201,10 +201,14 @@ class PesapalService {
           notification_id: this.ipnId,
           billing_address: {
             email_address: orderData.email,
-            phone_number: orderData.phone,
+            phone_number: orderData.phone || '',
             country_code: 'UG',
             first_name: orderData.firstName,
             last_name: orderData.lastName,
+            line_1: '',
+            city: '',
+            state: '',
+            postal_code: '',
           },
         };
 
@@ -215,6 +219,15 @@ class PesapalService {
             email_address: orderData.email.substring(0, 3) + '***'
           }
         });
+
+        console.log('Full request URL:', `${this.baseUrl}/api/Transactions/SubmitOrderRequest`);
+        console.log('Request headers:', {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+          'Authorization': `Bearer ${token.substring(0, 20)}...`,
+          'Cache-Control': 'no-cache',
+        });
+        console.log('Request body:', JSON.stringify(submitOrderRequest, null, 2));
 
         const response = await fetch(`${this.baseUrl}/api/Transactions/SubmitOrderRequest`, {
           method: 'POST',
@@ -235,7 +248,9 @@ class PesapalService {
           if (response.status === 401) {
             throw new Error('Pesapal authentication expired. Please try again.');
           } else if (response.status === 400) {
-            throw new Error('Invalid order data. Please check your information and try again.');
+            throw new Error(`Invalid order data: ${responseText || 'Please check your information and try again.'}`);
+          } else if (response.status === 405) {
+            throw new Error(`Method not allowed: ${responseText || 'Please check the API endpoint and method.'}`);
           } else {
             throw new Error(`Failed to submit order to Pesapal (${response.status}): ${responseText || 'Unknown error'}`);
           }
@@ -265,10 +280,14 @@ class PesapalService {
           notification_id: this.ipnId,
           billing_address: {
             email_address: orderData.email,
-            phone_number: orderData.phone,
+            phone_number: orderData.phone || '',
             country_code: 'UG',
             first_name: orderData.firstName,
             last_name: orderData.lastName,
+            line_1: '',
+            city: '',
+            state: '',
+            postal_code: '',
           },
         };
 
