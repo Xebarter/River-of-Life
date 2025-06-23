@@ -187,10 +187,14 @@ class PesapalService {
   }): Promise<PesapalSubmitOrderResponse> {
     try {
       console.log(`Submitting order to Pesapal via ${this.isDevelopment ? 'direct API' : 'proxy'}:`, orderData);
+      console.log('Development mode:', this.isDevelopment);
+      console.log('Base URL:', this.baseUrl);
       
       if (this.isDevelopment) {
+        console.log('Using direct API call for development...');
         // Direct API call for development
         const token = await this.getAccessToken();
+        console.log('Token obtained successfully, length:', token.length);
         
         const submitOrderRequest: PesapalSubmitOrderRequest = {
           id: orderData.reference,

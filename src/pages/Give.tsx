@@ -74,15 +74,34 @@ const Give: React.FC = () => {
       const { data: donation } = await createDonation(donationData);
 
       // Submit to Pesapal
-      const pesapalResponse = await pesapalService.submitOrder({
-        amount: form.amount,
-        description: `Donation from ${form.donor_name}`,
-        email: form.email,
-        phone: form.phone_number,
-        firstName: form.donor_name.split(' ')[0] || form.donor_name,
-        lastName: form.donor_name.split(' ').slice(1).join(' ') || '',
-        reference: donation.id
+      console.log('About to submit to Pesapal...');
+      console.log('Pesapal service config:', {
+        isDevelopment: import.meta.env.DEV,
+        hasCredentials: !!(import.meta.env.VITE_PESAPAL_CONSUMER_KEY && import.meta.env.VITE_PESAPAL_CONSUMER_SECRET)
       });
+      
+      let pesapalResponse;
+      try {
+        pesapalResponse = await pesapalService.submitOrder({
+          amount: form.amount,
+          description: `Donation from ${form.donor_name}`,
+          email: form.email,
+          phone: form.phone_number,
+          firstName: form.donor_name.split(' ')[0] || form.donor_name,
+          lastName: form.donor_name.split(' ').slice(1).join(' ') || '',
+          reference: donation.id
+        });
+      } catch (pesapalError: any) {
+        console.error('Pesapal error:', pesapalError);
+        
+        // In development mode, provide a helpful message about CORS
+        if (import.meta.env.DEV) {
+          setError('Payment service is not available in development mode due to CORS restrictions. Please test this feature in production deployment.');
+          return;
+        }
+        
+        throw pesapalError;
+      }
 
       // Redirect to Pesapal payment page
       if (pesapalResponse.redirect_url) {
