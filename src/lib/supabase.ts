@@ -32,27 +32,72 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
     headers: {
       'X-Client-Info': 'river-of-life-ministries'
     }
+  },
+  db: {
+    schema: 'public'
   }
 });
 
-// Test connection function
-export const testSupabaseConnection = async () => {
+// Enhanced test connection function with retry logic
+export const testSupabaseConnection = async (retries = 3) => {
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    try {
+      console.log(`Testing Supabase connection (attempt ${attempt}/${retries})...`);
+      
+      const { data, error } = await supabase
+        .from('resources')
+        .select('count')
+        .limit(1);
+      
+      if (error) {
+        console.error(`Supabase connection test failed (attempt ${attempt}):`, error);
+        if (attempt === retries) {
+          return { success: false, error: error.message };
+        }
+        // Wait before retrying
+        await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
+        continue;
+      }
+      
+      console.log('Supabase connection test successful');
+      return { success: true, data };
+    } catch (error) {
+      console.error(`Supabase connection test error (attempt ${attempt}):`, error);
+      if (attempt === retries) {
+        return { 
+          success: false, 
+          error: error instanceof Error ? error.message : 'Unknown error',
+          details: {
+            url: supabaseUrl,
+            hasKey: !!supabaseAnonKey,
+            errorType: error.constructor.name
+          }
+        };
+      }
+      // Wait before retrying
+      await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
+    }
+  }
+};
+
+// Enhanced donation creation with better error handling
+export const createDonation = async (donationData: Omit<Donation, 'id' | 'created_at'>) => {
   try {
     const { data, error } = await supabase
-      .from('resources')
-      .select('count')
-      .limit(1);
-    
+      .from('donations')
+      .insert([donationData])
+      .select()
+      .single();
+
     if (error) {
-      console.error('Supabase connection test failed:', error);
-      return { success: false, error: error.message };
+      console.error('Supabase donation creation error:', error);
+      throw new Error(`Database error: ${error.message}`);
     }
-    
-    console.log('Supabase connection test successful');
+
     return { success: true, data };
   } catch (error) {
-    console.error('Supabase connection test error:', error);
-    return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
+    console.error('Donation creation failed:', error);
+    throw error;
   }
 };
 
@@ -88,13 +133,16 @@ export interface Resource {
 export interface Donation {
   id: string;
   donor_name: string;
-  email: string;
-  phone?: string;
+  donor_email: string;
+  donor_phone?: string;
   amount: number;
-  message?: string;
-  payment_status: 'pending' | 'completed' | 'failed';
+  currency?: string;
+  payment_method?: string;
+  transaction_id?: string;
   pesapal_tracking_id?: string;
+  status: 'pending' | 'completed' | 'failed' | 'cancelled';
   created_at: string;
+  updated_at?: string;
 }
 
 export interface PrayerRequest {

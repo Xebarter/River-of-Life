@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Heart, CreditCard, Smartphone, Gift, CheckCircle, AlertCircle } from 'lucide-react';
-import { supabase } from '../lib/supabase';
+import { supabase, createDonation, testSupabaseConnection } from '../lib/supabase';
 import { pesapalService } from '../lib/pesapal';
 import LoadingSpinner from '../components/LoadingSpinner';
 import { Helmet } from 'react-helmet-async';
@@ -51,108 +51,59 @@ const Give: React.FC = () => {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
-    setError(null);
+    setError('');
 
     try {
-      // Validate form
-      if (!form.donor_name || !form.email || !form.amount || form.amount <= 0) {
-        throw new Error('Please fill in all required fields');
+      // Test Supabase connection first
+      const connectionTest = await testSupabaseConnection();
+      if (!connectionTest?.success) {
+        throw new Error(`Database connection failed: ${connectionTest?.error || 'Unknown error'}`);
       }
 
-      if (form.amount < 1000) {
-        throw new Error('Minimum donation amount is UGX 1,000');
-      }
+      // Create donation record
+      const donationData = {
+        donor_name: form.donor_name,
+        donor_email: form.email,
+        donor_phone: form.phone_number || undefined,
+        amount: form.amount,
+        currency: 'UGX',
+        status: 'pending' as const,
+        pesapal_tracking_id: undefined
+      };
 
-      console.log('Processing donation:', form);
+      const { data: donation } = await createDonation(donationData);
 
-      // Create donation record - using correct column names from database schema
-      const { data: donation, error: dbError } = await supabase
-        .from('donations')
-        .insert({
-          donor_name: form.donor_name,
-          donor_email: form.email, // Changed from 'email' to 'donor_email'
-          donor_phone: form.phone_number, // Changed from 'phone_number' to 'donor_phone'
-          amount: form.amount,
-          status: 'pending', // Changed from 'payment_status' to 'status'
-        })
-        .select()
-        .single();
+      // Submit to Pesapal
+      const pesapalResponse = await pesapalService.submitOrder({
+        amount: form.amount,
+        description: `Donation from ${form.donor_name}`,
+        email: form.email,
+        phone: form.phone_number,
+        firstName: form.donor_name.split(' ')[0] || form.donor_name,
+        lastName: form.donor_name.split(' ').slice(1).join(' ') || '',
+        reference: donation.id
+      });
 
-      if (dbError || !donation) {
-        console.error('Database error:', dbError);
-        throw new Error('Failed to create donation record. Please try again.');
-      }
-
-      console.log('Donation record created:', donation);
-
-      // Prepare names for Pesapal
-      const names = form.donor_name.trim().split(' ');
-      const firstName = names[0] || 'Anonymous';
-      const lastName = names.slice(1).join(' ') || 'Donor';
-
-      // Submit order to Pesapal
-      try {
-        const pesapalResponse = await pesapalService.submitOrder({
-          amount: form.amount,
-          description: `Donation to River of Life Ministries - ${form.message || 'General Support'}`,
-          email: form.email,
-          phone: form.phone_number,
-          firstName,
-          lastName,
-          reference: donation.id,
-        });
-
-        console.log('Pesapal response:', pesapalResponse);
-
-        // Update donation with Pesapal tracking ID
-        await supabase
-          .from('donations')
-          .update({ pesapal_tracking_id: pesapalResponse.order_tracking_id })
-          .eq('id', donation.id);
-
-        // Redirect to Pesapal payment page
+      // Redirect to Pesapal payment page
+      if (pesapalResponse.redirect_url) {
         window.location.href = pesapalResponse.redirect_url;
-
-      } catch (pesapalError) {
-        console.error('Pesapal error:', pesapalError);
-        
-        // Update donation status to failed
-        await supabase
-          .from('donations')
-          .update({ status: 'failed' })
-          .eq('id', donation.id);
-
-        // Provide more specific error messages based on the error type
-        if (pesapalError instanceof Error) {
-          const errorMessage = pesapalError.message.toLowerCase();
-          
-          if (errorMessage.includes('invalid pesapal credentials') || 
-              errorMessage.includes('consumer key') || 
-              errorMessage.includes('consumer secret')) {
-            throw new Error('Payment service configuration error. Please contact support.');
-          } else if (errorMessage.includes('network error') || 
-                     errorMessage.includes('fetch') ||
-                     errorMessage.includes('connection')) {
-            throw new Error('Network connection error. Please check your internet connection and try again.');
-          } else if (errorMessage.includes('server error') || 
-                     errorMessage.includes('service temporarily unavailable')) {
-            throw new Error('Payment service is temporarily unavailable. Please try again in a few minutes.');
-          } else if (errorMessage.includes('authentication expired')) {
-            throw new Error('Payment session expired. Please try again.');
-          } else if (errorMessage.includes('invalid order data')) {
-            throw new Error('Please check your donation information and try again.');
-          } else {
-            // For any other Pesapal errors, show a generic message
-            throw new Error('Payment processing is currently unavailable. Please try again later or contact support.');
-          }
-        } else {
-          throw new Error('Payment processing failed. Please try again or contact support.');
-        }
+      } else {
+        throw new Error('No payment URL received from Pesapal');
       }
 
-    } catch (err) {
-      console.error('Error processing donation:', err);
-      setError(err instanceof Error ? err.message : 'An unexpected error occurred while processing your donation');
+    } catch (error: any) {
+      console.error('Error processing donation:', error);
+      
+      // Provide specific error messages based on error type
+      if (error.message?.includes('Failed to fetch') || error.message?.includes('Network')) {
+        setError('Network connection error. Please check your internet connection and try again.');
+      } else if (error.message?.includes('Database connection failed')) {
+        setError('Service temporarily unavailable. Please try again in a few minutes.');
+      } else if (error.message?.includes('Pesapal')) {
+        setError('Payment service error. Please try again or contact support.');
+      } else {
+        setError(error.message || 'An unexpected error occurred. Please try again.');
+      }
     } finally {
       setLoading(false);
     }

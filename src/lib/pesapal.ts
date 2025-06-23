@@ -44,30 +44,27 @@ class PesapalService {
   private consumerSecret: string;
   private ipnId: string;
   private callbackUrl: string;
+  private isDevelopment: boolean;
 
   constructor() {
-    this.baseUrl = import.meta.env.VITE_PESAPAL_BASE_URL || '/pesapal-api';
+    // Check if we're in development mode
+    this.isDevelopment = import.meta.env.DEV;
+    
+    if (this.isDevelopment) {
+      // In development, use direct Pesapal API calls
+      this.baseUrl = 'https://pay.pesapal.com/v3';
+    } else {
+      // In production, use the serverless function proxy
+      this.baseUrl = '/api/pesapal';
+    }
+    
     this.consumerKey = import.meta.env.VITE_PESAPAL_CONSUMER_KEY || '';
     this.consumerSecret = import.meta.env.VITE_PESAPAL_CONSUMER_SECRET || '';
     this.ipnId = import.meta.env.VITE_PESAPAL_IPN_ID || '';
-    this.callbackUrl = window.location.origin + '/payment/callback';
-
-    console.log('Pesapal Service initialized with:');
-    console.log('- Base URL:', this.baseUrl);
-    console.log('- Consumer Key:', this.consumerKey?.substring(0, 8) + '...');
-    console.log('- IPN ID:', this.ipnId);
-    console.log('- Callback URL:', this.callbackUrl);
-
-    // Validate required environment variables
-    if (!this.consumerKey || !this.consumerSecret || !this.ipnId) {
-      console.error('Missing required Pesapal environment variables');
-      throw new Error('Pesapal configuration is incomplete. Please check your environment variables.');
-    }
+    this.callbackUrl = import.meta.env.VITE_PESAPAL_CALLBACK_URL || '';
   }
 
   private formatPesapalError(error: any): string {
-    if (!error) return 'Unknown Pesapal error';
-    
     const errorParts: string[] = [];
     
     if (error.type) errorParts.push(`Type: ${error.type}`);
@@ -80,68 +77,94 @@ class PesapalService {
 
   private async getAccessToken(): Promise<string> {
     try {
-      console.log('Requesting Pesapal access token...');
+      console.log(`Requesting Pesapal access token via ${this.isDevelopment ? 'direct API' : 'proxy'}...`);
       
-      // Properly encode the credentials to handle special characters
-      const requestBody = {
-        consumer_key: this.consumerKey.trim(),
-        consumer_secret: this.consumerSecret.trim(),
-      };
+      if (this.isDevelopment) {
+        // Direct API call for development
+        const requestBody = {
+          consumer_key: this.consumerKey.trim(),
+          consumer_secret: this.consumerSecret.trim(),
+        };
 
-      console.log('Authentication request prepared with encoded credentials');
+        const response = await fetch(`${this.baseUrl}/api/Auth/RequestToken`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+            'Cache-Control': 'no-cache',
+          },
+          body: JSON.stringify(requestBody),
+        });
 
-      const response = await fetch(`${this.baseUrl}/api/Auth/RequestToken`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Accept': 'application/json',
-          'Cache-Control': 'no-cache',
-        },
-        body: JSON.stringify(requestBody),
-      });
+        console.log('Pesapal auth response status:', response.status);
 
-      console.log('Pesapal auth response status:', response.status);
-      console.log('Pesapal auth response headers:', Object.fromEntries(response.headers.entries()));
-
-      const responseText = await response.text();
-      console.log('Pesapal auth response body:', responseText);
-
-      if (!response.ok) {
-        if (response.status === 401) {
-          throw new Error('Invalid Pesapal credentials. Please verify your consumer key and secret.');
-        } else if (response.status === 403) {
-          throw new Error('Pesapal account access denied. Please check your account status.');
-        } else if (response.status === 500) {
-          throw new Error('Pesapal server error. Please try again later or contact Pesapal support.');
-        } else if (response.status >= 500) {
-          throw new Error('Pesapal service temporarily unavailable. Please try again later.');
-        } else {
-          throw new Error(`Pesapal authentication failed (${response.status}): ${responseText || 'Unknown error'}`);
+        if (!response.ok) {
+          if (response.status === 401) {
+            throw new Error('Invalid Pesapal credentials. Please verify your consumer key and secret.');
+          } else if (response.status === 403) {
+            throw new Error('Pesapal account access denied. Please check your account status.');
+          } else if (response.status === 500) {
+            throw new Error('Pesapal server error. Please try again later or contact Pesapal support.');
+          } else if (response.status >= 500) {
+            throw new Error('Pesapal service temporarily unavailable. Please try again later.');
+          } else {
+            const errorText = await response.text();
+            throw new Error(`Pesapal authentication failed (${response.status}): ${errorText || 'Unknown error'}`);
+          }
         }
-      }
 
-      if (!responseText) {
-        throw new Error('Empty response from Pesapal authentication service');
-      }
+        const data: PesapalAuthResponse = await response.json();
 
-      let data: PesapalAuthResponse;
-      try {
-        data = JSON.parse(responseText);
-      } catch (parseError) {
-        console.error('JSON parse error:', parseError);
-        throw new Error(`Invalid JSON response from Pesapal: ${responseText}`);
-      }
+        if (data.error) {
+          throw new Error(`Pesapal API error: ${this.formatPesapalError(data.error)}`);
+        }
 
-      if (data.error) {
-        throw new Error(`Pesapal API error: ${this.formatPesapalError(data.error)}`);
-      }
+        if (!data.token) {
+          throw new Error('No access token received from Pesapal');
+        }
 
-      if (!data.token) {
-        throw new Error('No access token received from Pesapal');
-      }
+        console.log('Successfully obtained Pesapal access token');
+        return data.token;
+      } else {
+        // Serverless function call for production
+        const response = await fetch(`${this.baseUrl}/auth`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+          },
+        });
 
-      console.log('Successfully obtained Pesapal access token');
-      return data.token;
+        console.log('Pesapal auth response status:', response.status);
+
+        if (!response.ok) {
+          if (response.status === 401) {
+            throw new Error('Invalid Pesapal credentials. Please verify your consumer key and secret.');
+          } else if (response.status === 403) {
+            throw new Error('Pesapal account access denied. Please check your account status.');
+          } else if (response.status === 500) {
+            throw new Error('Pesapal server error. Please try again later or contact Pesapal support.');
+          } else if (response.status >= 500) {
+            throw new Error('Pesapal service temporarily unavailable. Please try again later.');
+          } else {
+            const errorText = await response.text();
+            throw new Error(`Pesapal authentication failed (${response.status}): ${errorText || 'Unknown error'}`);
+          }
+        }
+
+        const data: PesapalAuthResponse = await response.json();
+
+        if (data.error) {
+          throw new Error(`Pesapal API error: ${this.formatPesapalError(data.error)}`);
+        }
+
+        if (!data.token) {
+          throw new Error('No access token received from Pesapal');
+        }
+
+        console.log('Successfully obtained Pesapal access token');
+        return data.token;
+      }
     } catch (error) {
       console.error('Error getting Pesapal access token:', error);
       
@@ -163,72 +186,128 @@ class PesapalService {
     reference: string;
   }): Promise<PesapalSubmitOrderResponse> {
     try {
-      console.log('Submitting order to Pesapal:', orderData);
+      console.log(`Submitting order to Pesapal via ${this.isDevelopment ? 'direct API' : 'proxy'}:`, orderData);
       
-      const token = await this.getAccessToken();
-      
-      const submitOrderRequest: PesapalSubmitOrderRequest = {
-        id: orderData.reference,
-        currency: 'UGX',
-        amount: orderData.amount,
-        description: orderData.description,
-        callback_url: this.callbackUrl,
-        notification_id: this.ipnId,
-        billing_address: {
-          email_address: orderData.email,
-          phone_number: orderData.phone,
-          country_code: 'UG',
-          first_name: orderData.firstName,
-          last_name: orderData.lastName,
-        },
-      };
+      if (this.isDevelopment) {
+        // Direct API call for development
+        const token = await this.getAccessToken();
+        
+        const submitOrderRequest: PesapalSubmitOrderRequest = {
+          id: orderData.reference,
+          currency: 'UGX',
+          amount: orderData.amount,
+          description: orderData.description,
+          callback_url: this.callbackUrl,
+          notification_id: this.ipnId,
+          billing_address: {
+            email_address: orderData.email,
+            phone_number: orderData.phone,
+            country_code: 'UG',
+            first_name: orderData.firstName,
+            last_name: orderData.lastName,
+          },
+        };
 
-      console.log('Submitting order request:', {
-        ...submitOrderRequest,
-        billing_address: {
-          ...submitOrderRequest.billing_address,
-          email_address: orderData.email.substring(0, 3) + '***'
+        console.log('Submitting order request:', {
+          ...submitOrderRequest,
+          billing_address: {
+            ...submitOrderRequest.billing_address,
+            email_address: orderData.email.substring(0, 3) + '***'
+          }
+        });
+
+        const response = await fetch(`${this.baseUrl}/api/Transactions/SubmitOrderRequest`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+            'Authorization': `Bearer ${token}`,
+            'Cache-Control': 'no-cache',
+          },
+          body: JSON.stringify(submitOrderRequest),
+        });
+
+        const responseText = await response.text();
+        console.log('Pesapal submit order response status:', response.status);
+        console.log('Pesapal submit order response:', responseText);
+
+        if (!response.ok) {
+          if (response.status === 401) {
+            throw new Error('Pesapal authentication expired. Please try again.');
+          } else if (response.status === 400) {
+            throw new Error('Invalid order data. Please check your information and try again.');
+          } else {
+            throw new Error(`Failed to submit order to Pesapal (${response.status}): ${responseText || 'Unknown error'}`);
+          }
         }
-      });
 
-      const response = await fetch(`${this.baseUrl}/api/Transactions/SubmitOrderRequest`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Accept': 'application/json',
-          'Authorization': `Bearer ${token}`,
-          'Cache-Control': 'no-cache',
-        },
-        body: JSON.stringify(submitOrderRequest),
-      });
-
-      const responseText = await response.text();
-      console.log('Pesapal submit order response status:', response.status);
-      console.log('Pesapal submit order response:', responseText);
-
-      if (!response.ok) {
-        if (response.status === 401) {
-          throw new Error('Pesapal authentication expired. Please try again.');
-        } else if (response.status === 400) {
-          throw new Error('Invalid order data. Please check your information and try again.');
-        } else {
-          throw new Error(`Failed to submit order to Pesapal (${response.status}): ${responseText || 'Unknown error'}`);
+        if (!responseText) {
+          throw new Error('Empty response from Pesapal order submission');
         }
-      }
 
-      if (!responseText) {
-        throw new Error('Empty response from Pesapal order submission');
-      }
+        let data: PesapalSubmitOrderResponse;
+        try {
+          data = JSON.parse(responseText);
+        } catch (parseError) {
+          throw new Error(`Invalid JSON response from Pesapal: ${responseText}`);
+        }
 
-      let data: PesapalSubmitOrderResponse;
-      try {
-        data = JSON.parse(responseText);
-      } catch (parseError) {
-        throw new Error(`Invalid JSON response from Pesapal: ${responseText}`);
-      }
+        console.log('Successfully submitted order to Pesapal');
+        return data;
+      } else {
+        // Serverless function call for production
+        const submitOrderRequest: PesapalSubmitOrderRequest = {
+          id: orderData.reference,
+          currency: 'UGX',
+          amount: orderData.amount,
+          description: orderData.description,
+          callback_url: this.callbackUrl,
+          notification_id: this.ipnId,
+          billing_address: {
+            email_address: orderData.email,
+            phone_number: orderData.phone,
+            country_code: 'UG',
+            first_name: orderData.firstName,
+            last_name: orderData.lastName,
+          },
+        };
 
-      console.log('Successfully submitted order to Pesapal');
-      return data;
+        console.log('Submitting order request:', {
+          ...submitOrderRequest,
+          billing_address: {
+            ...submitOrderRequest.billing_address,
+            email_address: orderData.email.substring(0, 3) + '***'
+          }
+        });
+
+        const response = await fetch(`${this.baseUrl}/submit-order`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+          },
+          body: JSON.stringify(submitOrderRequest),
+        });
+
+        console.log('Pesapal submit order response status:', response.status);
+
+        if (!response.ok) {
+          if (response.status === 401) {
+            throw new Error('Pesapal authentication expired. Please try again.');
+          } else if (response.status === 400) {
+            const errorText = await response.text();
+            throw new Error('Invalid order data. Please check your information and try again.');
+          } else {
+            const errorText = await response.text();
+            throw new Error(`Failed to submit order to Pesapal (${response.status}): ${errorText || 'Unknown error'}`);
+          }
+        }
+
+        const data: PesapalSubmitOrderResponse = await response.json();
+
+        console.log('Successfully submitted order to Pesapal');
+        return data;
+      }
     } catch (error) {
       console.error('Error submitting order to Pesapal:', error);
       throw error;
@@ -237,30 +316,53 @@ class PesapalService {
 
   async getTransactionStatus(orderTrackingId: string): Promise<any> {
     try {
-      console.log('Getting transaction status from Pesapal:', orderTrackingId);
+      console.log(`Getting transaction status from Pesapal via ${this.isDevelopment ? 'direct API' : 'proxy'}:`, orderTrackingId);
       
-      const token = await this.getAccessToken();
-      
-      const response = await fetch(
-        `${this.baseUrl}/api/Transactions/GetTransactionStatus?orderTrackingId=${orderTrackingId}`,
-        {
-          method: 'GET',
-          headers: {
-            'Accept': 'application/json',
-            'Authorization': `Bearer ${token}`,
-            'Cache-Control': 'no-cache',
-          },
+      if (this.isDevelopment) {
+        // Direct API call for development
+        const token = await this.getAccessToken();
+        
+        const response = await fetch(
+          `${this.baseUrl}/api/Transactions/GetTransactionStatus?orderTrackingId=${orderTrackingId}`,
+          {
+            method: 'GET',
+            headers: {
+              'Accept': 'application/json',
+              'Authorization': `Bearer ${token}`,
+              'Cache-Control': 'no-cache',
+            },
+          }
+        );
+
+        const responseText = await response.text();
+        console.log('Pesapal transaction status response:', responseText);
+
+        if (!response.ok) {
+          throw new Error(`Failed to get transaction status (${response.status}): ${responseText}`);
         }
-      );
 
-      const responseText = await response.text();
-      console.log('Pesapal transaction status response:', responseText);
+        return JSON.parse(responseText);
+      } else {
+        // Serverless function call for production
+        const response = await fetch(
+          `${this.baseUrl}/transaction-status?orderTrackingId=${orderTrackingId}`,
+          {
+            method: 'GET',
+            headers: {
+              'Accept': 'application/json',
+            },
+          }
+        );
 
-      if (!response.ok) {
-        throw new Error(`Failed to get transaction status (${response.status}): ${responseText}`);
+        console.log('Pesapal transaction status response status:', response.status);
+
+        if (!response.ok) {
+          const errorText = await response.text();
+          throw new Error(`Failed to get transaction status (${response.status}): ${errorText}`);
+        }
+
+        return await response.json();
       }
-
-      return JSON.parse(responseText);
     } catch (error) {
       console.error('Error getting transaction status:', error);
       throw error;
