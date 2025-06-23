@@ -1,13 +1,12 @@
 {
-  "functions": {
-    "api/pesapal.js": {
-      "maxDuration": 30
-    }
-  },
   "rewrites": [
     {
       "source": "/api/pesapal/:path*",
       "destination": "/api/pesapal"
+    },
+    {
+      "source": "/(.*)",
+      "destination": "/"
     }
   ]
 } 
